@@ -638,7 +638,8 @@ class MotionWindowManager:
                     "-ss", f"00:00:{mock_sec:02d}",
                     "-i", source_input,
                     "-t", str(MOTION_CLIP_DURATION_SEC),
-                    "-c", "copy",
+                    "-c:v", "copy",
+                    "-an",
                     clip_path
                 ]
                 res = subprocess.run(cut_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -654,7 +655,8 @@ class MotionWindowManager:
                             "-timeout", "5000000",
                             "-i", pb_url,
                             "-t", str(MOTION_CLIP_DURATION_SEC),
-                            "-c", "copy",
+                            "-c:v", "copy",
+                            "-an",
                             clip_path
                         ]
                         try:
