@@ -591,6 +591,33 @@ class MotionWindowManager:
             overlap_desc = f"⚡ Sambungan Klip Sebelumnya (Anti-Overlap Aktif, mulai {start_dt.strftime('%H:%M:%S')})" if is_overlap else f"Normal (Pre-event {MOTION_PRE_EVENT_SEC}s sebelum kejadian)"
             print(f"   📐 [MotionClip Boundary Ch {channel_num}] Rentang NVR: {start_dt.strftime('%H:%M:%S')} s/d {end_dt.strftime('%H:%M:%S')} ({MOTION_CLIP_DURATION_SEC}s) | Status: {overlap_desc}")
 
+            # Konversi format waktu untuk NVR Playback Track:
+            # Standar ISO UTC ("Z"): Konversi matematis jika ada timezone (misal +07:00 -> UTC 00:00)
+            if dt_nvr.tzinfo is not None:
+                start_dt_utc = start_dt.astimezone(timezone.utc)
+                end_dt_utc = end_dt.astimezone(timezone.utc)
+            else:
+                start_dt_utc = start_dt
+                end_dt_utc = end_dt
+
+            s_utc_str = start_dt_utc.strftime("%Y%m%dT%H%M%SZ")
+            e_utc_str = end_dt_utc.strftime("%Y%m%dT%H%M%SZ")
+
+            # Waktu lokal NVR (tanpa huruf 'Z')
+            s_loc_str = start_dt.strftime("%Y%m%dT%H%M%S")
+            e_loc_str = end_dt.strftime("%Y%m%dT%H%M%S")
+
+            # Prioritas kandidat URL Playback NVR:
+            # Lapis 1A: Main-Stream (01)
+            # Lapis 1B: Sub-Stream (02)
+            playback_candidates = [
+                ("Lapis 1A (Main-Stream UTC)", f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/tracks/{channel_num}01?starttime={s_utc_str}&endtime={e_utc_str}"),
+                ("Lapis 1A (Main-Stream UTC Slash)", f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/tracks/{channel_num}01/?starttime={s_utc_str}&endtime={e_utc_str}"),
+                ("Lapis 1A (Main-Stream Lokal)", f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/tracks/{channel_num}01?starttime={s_loc_str}&endtime={e_loc_str}"),
+                ("Lapis 1B (Sub-Stream UTC)", f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/tracks/{channel_num}02?starttime={s_utc_str}&endtime={e_utc_str}"),
+                ("Lapis 1B (Sub-Stream UTC Slash)", f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/tracks/{channel_num}02/?starttime={s_utc_str}&endtime={e_utc_str}"),
+            ]
+
             # Tunggu sejenak agar NVR selesai menulis detik kejadian ke disk
             time.sleep(MOTION_CLIP_DURATION_SEC + 1)
 
@@ -600,6 +627,8 @@ class MotionWindowManager:
             clip_path = os.path.join(TEMP_CLIPS_DIR, clip_filename)
 
             clip_success = False
+            last_err_msg = "Unknown"
+
             if MOCK_MODE:
                 # Simulasi klip dari file dummy cctv.kapal.mp4
                 source_input = os.path.join(BASE_DIR, MOCK_VIDEO)
@@ -613,45 +642,46 @@ class MotionWindowManager:
                     clip_path
                 ]
                 res = subprocess.run(cut_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                clip_success = res.returncode == 0 and os.path.exists(clip_path)
+                clip_success = res.returncode == 0 and os.path.exists(clip_path) and os.path.getsize(clip_path) > 1000
             else:
-                # Mode Asli: Mengambil rekaman playback track dari NVR
-                s_str = start_dt.strftime("%Y%m%dT%H%M%SZ")
-                e_str = end_dt.strftime("%Y%m%dT%H%M%SZ")
-                playback_url = f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/tracks/{channel_num}01?starttime={s_str}&endtime={e_str}"
-                
-                cut_cmd = [
-                    FFMPEG_CMD, "-y",
-                    "-rtsp_transport", "tcp",
-                    "-stimeout", "5000000",
-                    "-i", playback_url,
-                    "-t", str(MOTION_CLIP_DURATION_SEC),
-                    "-c", "copy",
-                    clip_path
-                ]
-                try:
-                    res = subprocess.run(cut_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=MOTION_CLIP_DURATION_SEC + 8)
-                    clip_success = res.returncode == 0 and os.path.exists(clip_path) and os.path.getsize(clip_path) > 1000
-                except Exception:
-                    clip_success = False
+                # Mode Asli: Playback Track NVR (Lapis 1A & 1B) dengan Retry 5 Detik
+                max_attempts = 2
+                for attempt in range(1, max_attempts + 1):
+                    for tier_label, pb_url in playback_candidates:
+                        cut_cmd = [
+                            FFMPEG_CMD, "-y",
+                            "-rtsp_transport", "tcp",
+                            "-timeout", "5000000",
+                            "-i", pb_url,
+                            "-t", str(MOTION_CLIP_DURATION_SEC),
+                            "-c", "copy",
+                            clip_path
+                        ]
+                        try:
+                            res = subprocess.run(
+                                cut_cmd,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.PIPE,
+                                text=True,
+                                timeout=MOTION_CLIP_DURATION_SEC + 8
+                            )
+                            if res.returncode == 0 and os.path.exists(clip_path) and os.path.getsize(clip_path) > 1000:
+                                clip_success = True
+                                break
+                            else:
+                                err_lines = [l.strip() for l in (res.stderr or "").splitlines() if l.strip()]
+                                last_err_msg = err_lines[-1] if err_lines else f"Exit code {res.returncode}"
+                        except subprocess.TimeoutExpired:
+                            last_err_msg = "Timeout RTSP (NVR tidak merespons dalam 18s)"
+                        except Exception as ex:
+                            last_err_msg = str(ex)
 
-                # Fallback jika NVR playback track belum support: Rekam live stream sub-stream 10 detik
-                if not clip_success:
-                    live_url = f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/Channels/{channel_num}02"
-                    live_cmd = [
-                        FFMPEG_CMD, "-y",
-                        "-rtsp_transport", "tcp",
-                        "-stimeout", "5000000",
-                        "-i", live_url,
-                        "-t", str(MOTION_CLIP_DURATION_SEC),
-                        "-c", "copy",
-                        clip_path
-                    ]
-                    try:
-                        res2 = subprocess.run(live_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=MOTION_CLIP_DURATION_SEC + 8)
-                        clip_success = res2.returncode == 0 and os.path.exists(clip_path) and os.path.getsize(clip_path) > 1000
-                    except Exception:
-                        clip_success = False
+                    if clip_success:
+                        break
+
+                    if attempt < max_attempts:
+                        print(f"   ⏳ [MotionClip Ch {channel_num}] NVR belum selesai menulis rekaman ke HDD (Status: {last_err_msg}). Jeda 5s lalu mencoba lagi...")
+                        time.sleep(5)
 
             with self.lock:
                 cstate = self._get_channel_state(channel_num)
@@ -662,12 +692,12 @@ class MotionWindowManager:
                     time_left = max(0, MOTION_WINDOW_SEC - (time.time() - cstate["window_start_time"]))
                     print(f"   🎬 [MotionClip Ch {channel_num}] Berhasil potong klip ke-{len(cstate['clips'])}: {clip_filename} ({clip_size_kb:.1f} KB) | Sisa Window: {time_left:.0f}s")
                 else:
-                    print(f"   ⚠️ [MotionClip Ch {channel_num}] Gagal memotong klip rekaman.")
+                    print(f"   ⚠️ [MotionClip Ch {channel_num}] Gagal memotong klip rekaman NVR: {last_err_msg}")
         except Exception as e:
             with self.lock:
                 cstate = self._get_channel_state(channel_num)
                 cstate["is_busy_recording"] = False
-            print(f"[MotionClip Error] {e}")
+            print(f"[MotionClip Error Ch {channel_num}] {e}")
 
     def check_and_finalize_windows(self):
         """Memeriksa apakah jendela 5 menit telah berakhir untuk diproses dan di-merge."""
