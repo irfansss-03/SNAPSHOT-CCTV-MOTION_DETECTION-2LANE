@@ -126,14 +126,19 @@ Sistem secara otomatis mendeteksi ketersediaan GPU Intel (misal Intel Atom Cherr
 * **Header**: `Content-Type: multipart/form-data`
 * **Form-Data**:
   * `captured_at`: `2026-09-08T08:44:28.463Z` (ISO-8601 UTC)
+  * `camera_name`: `cam1`
+  * `event_type`: `snapshot`
   * `file`: `[binary image/webp]` (< 10 KB, Resolusi 360x270)
 
 ### 🚨 2. Endpoint Motion Snapshot Instan (Realtime Alert)
 * **Method**: `POST`
 * **URL**: `{base_url}/cctv/worker/cameras/{cameraToken}/motion-snapshots`
 * **Header**: `Content-Type: multipart/form-data`
-* **Form-Data** *(Identik dengan Snapshot Rutin)*:
+* **Form-Data**:
   * `captured_at`: `2026-09-08T08:32:29.000Z` (ISO-8601 UTC)
+  * `camera_name`: `cam1`
+  * `event_type`: `motion_snapshot`
+  * `is_motion`: `1`
   * `file`: `[binary image/webp]` (< 10 KB, Resolusi 360x270)
 
 ### 🎬 3. Endpoint Motion Video (Batch Windowing)
@@ -144,7 +149,9 @@ Sistem secara otomatis mendeteksi ketersediaan GPU Intel (misal Intel Atom Cherr
   * `file`: `[binary video/mp4]` (360p H.264 Faststart)
   * `thumbnail`: `[binary image/webp]` (Poster 360x270 px)
   * `captured_at`: `2026-09-08T08:32:26.000Z` (ISO-8601 UTC)
-  * `cameraToken`: `{cameraToken}`
+  * `camera_name`: `cam1`
+  * `event_type`: `motion_video`
+  * `is_motion`: `1`
 
 ---
 
