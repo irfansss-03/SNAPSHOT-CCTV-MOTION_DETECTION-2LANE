@@ -47,9 +47,24 @@ if [ -n "$TARGET_USER" ] && id "$TARGET_USER" >/dev/null 2>&1 && [ "$TARGET_USER
 fi
 
 # 1. Update & Install OS Dependencies (Termasuk sudo, btop, ffmpeg, va-driver untuk akselerasi Intel)
-echo "📦 [1/6] Menginstall OS Packages (sudo, btop, git, python3, ffmpeg, webp, sqlite3, va-driver-all, vainfo)..."
+echo "📦 [1/6] Mengkonfigurasi repositori & Menginstall OS Packages (VA-API Intel, ffmpeg, webp)..."
+if [ -f "/etc/debian_version" ]; then
+    echo "🔧 Mengaktifkan repositori non-free Debian untuk driver Intel GPU Shaders..."
+    $SUDO_CMD sed -i 's/main/main contrib non-free non-free-firmware/g' /etc/apt/sources.list 2>/dev/null || true
+fi
 $SUDO_CMD apt update -y
+$SUDO_CMD apt install -y sudo btop git python3 python3-pip python3-venv ffmpeg webp sqlite3 curl ca-certificates gnupg va-driver-all i965-va-driver-shaders vainfo intel-gpu-tools 2>/dev/null || \
 $SUDO_CMD apt install -y sudo btop git python3 python3-pip python3-venv ffmpeg webp sqlite3 curl ca-certificates gnupg va-driver-all vainfo
+
+# Daftarkan LIBVA_DRIVER_NAME=i965 permanen untuk hardware Intel CherryView/Braswell
+if ! grep -q "LIBVA_DRIVER_NAME=i965" /etc/environment 2>/dev/null; then
+    echo "LIBVA_DRIVER_NAME=i965" | $SUDO_CMD tee -a /etc/environment > /dev/null
+fi
+if [ -n "$TARGET_USER" ] && [ -f "/home/$TARGET_USER/.bashrc" ]; then
+    if ! grep -q "LIBVA_DRIVER_NAME=i965" "/home/$TARGET_USER/.bashrc" 2>/dev/null; then
+        echo "export LIBVA_DRIVER_NAME=i965" >> "/home/$TARGET_USER/.bashrc"
+    fi
+fi
 
 # 2. Install NetBird (Remote Management & Mesh VPN)
 echo "🦅 [2/6] Menginstall NetBird VPN..."
@@ -90,6 +105,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
+Environment="LIBVA_DRIVER_NAME=i965"
 WorkingDirectory=$CURRENT_DIR
 ExecStart=/usr/bin/python3 $CURRENT_DIR/snapshotcompress.py
 Restart=always

@@ -30,6 +30,9 @@ from requests.auth import HTTPDigestAuth, HTTPBasicAuth
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Optimasi Driver Intel GPU (CherryView / Braswell N3160)
+os.environ.setdefault("LIBVA_DRIVER_NAME", "i965")
+
 # =============================================================================
 # LOGGING HARIAN (DAILY ROTATED LOGGER)
 # =============================================================================
@@ -428,19 +431,23 @@ def transcode_video_to_360p(input_path: str, output_path: str) -> bool:
 
     # 1. Coba Hardware Acceleration Intel VA-API
     if os.path.exists(VAAPI_DEVICE):
+        scale_h = int(in_h * (VIDEO_SCALE_W / in_w)) & ~1 if (in_w > 0 and in_h > 0) else 360
+        vaapi_env = os.environ.copy()
+        vaapi_env["LIBVA_DRIVER_NAME"] = "i965"
         vaapi_cmd = [
             FFMPEG_CMD, "-y",
             "-vaapi_device", VAAPI_DEVICE,
             "-i", input_path,
-            "-vf", f"format=nv12|vaapi,hwupload,scale_vaapi=w={VIDEO_SCALE_W}:h=-2",
+            "-vf", f"format=nv12,hwupload,scale_vaapi=w={VIDEO_SCALE_W}:h={scale_h}",
             "-c:v", "h264_vaapi",
+            "-qp", "24",
             "-r", str(VIDEO_FPS),
             "-an",
             "-movflags", "+faststart",
             output_path
         ]
         try:
-            res = subprocess.run(vaapi_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            res = subprocess.run(vaapi_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=vaapi_env)
             if res.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
                 out_size_kb = os.path.getsize(output_path) / 1024.0
                 savings = max(0, (1 - (out_size_kb / in_size_kb)) * 100) if in_size_kb > 0 else 0
