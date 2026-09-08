@@ -605,13 +605,17 @@ class MotionWindowManager:
                 cut_cmd = [
                     FFMPEG_CMD, "-y",
                     "-rtsp_transport", "tcp",
+                    "-stimeout", "5000000",
                     "-i", playback_url,
                     "-t", str(MOTION_CLIP_DURATION_SEC),
                     "-c", "copy",
                     clip_path
                 ]
-                res = subprocess.run(cut_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                clip_success = res.returncode == 0 and os.path.exists(clip_path)
+                try:
+                    res = subprocess.run(cut_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=MOTION_CLIP_DURATION_SEC + 8)
+                    clip_success = res.returncode == 0 and os.path.exists(clip_path) and os.path.getsize(clip_path) > 1000
+                except Exception:
+                    clip_success = False
 
                 # Fallback jika NVR playback track belum support: Rekam live stream sub-stream 10 detik
                 if not clip_success:
@@ -619,13 +623,17 @@ class MotionWindowManager:
                     live_cmd = [
                         FFMPEG_CMD, "-y",
                         "-rtsp_transport", "tcp",
+                        "-stimeout", "5000000",
                         "-i", live_url,
                         "-t", str(MOTION_CLIP_DURATION_SEC),
                         "-c", "copy",
                         clip_path
                     ]
-                    res2 = subprocess.run(live_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    clip_success = res2.returncode == 0 and os.path.exists(clip_path)
+                    try:
+                        res2 = subprocess.run(live_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=MOTION_CLIP_DURATION_SEC + 8)
+                        clip_success = res2.returncode == 0 and os.path.exists(clip_path) and os.path.getsize(clip_path) > 1000
+                    except Exception:
+                        clip_success = False
 
             with self.lock:
                 cstate = self._get_channel_state(channel_num)
