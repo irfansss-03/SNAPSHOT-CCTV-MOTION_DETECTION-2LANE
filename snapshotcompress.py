@@ -516,6 +516,12 @@ class MotionWindowManager:
             }
         return self.channels[channel_num]
 
+    def should_capture_thumbnail(self, channel_num: int) -> bool:
+        """Memeriksa apakah jendela kamera ini belum memiliki thumbnail cover (hanya 1x per window)."""
+        with self.lock:
+            cstate = self._get_channel_state(channel_num)
+            return cstate["thumbnail_path"] is None
+
     def on_motion_event(self, cam_info: dict, nvr_datetime_str: str = None, thumbnail_path: str = None):
         """Dipanggil saat ada event gerakan terverifikasi dari NVR."""
         channel_num = cam_info["channel"]
@@ -922,15 +928,16 @@ def motion_event_listener_worker():
                                 print(f"   • Waktu NVR   : {nvr_dt_str if nvr_dt_str else 'N/A'}")
                                 print(f"   • Kamera      : Ch {channel_num} ({target_cam['name']})")
 
-                                if MOTION_CAPTURE_DELAY_SEC > 0:
-                                    print(f"   • Delay Jepret: Menunggu {MOTION_CAPTURE_DELAY_SEC}s...")
-                                    time.sleep(MOTION_CAPTURE_DELAY_SEC)
+                                # 1. SNAPSHOT THUMBNAIL: Hanya jepret 1x di awal kejadian per jendela 5 menit
+                                thumb_path = None
+                                if motion_window_mgr.should_capture_thumbnail(channel_num):
+                                    if MOTION_CAPTURE_DELAY_SEC > 0:
+                                        print(f"   • Delay Jepret: Menunggu {MOTION_CAPTURE_DELAY_SEC}s...")
+                                        time.sleep(MOTION_CAPTURE_DELAY_SEC)
+                                    m_res = take_nvr_snapshot(target_cam, is_motion_event=True, save_to_queue=False)
+                                    thumb_path = m_res.get("webp_path") if m_res.get("success") else None
 
-                                # 1. SNAPSHOT REALTIME INSTAN: Digunakan sebagai Thumbnail Poster Video Alert
-                                m_res = take_nvr_snapshot(target_cam, is_motion_event=True, save_to_queue=False)
-                                thumb_path = m_res.get("webp_path") if m_res.get("success") else None
-
-                                # 2. VIDEO 5 MENIT: Masukkan ke Window Manager bersama Thumbnail Cover
+                                # 2. VIDEO 5 MENIT: Masukkan ke Window Manager
                                 motion_window_mgr.on_motion_event(target_cam, nvr_dt_str, thumbnail_path=thumb_path)
 
                 # Parse Event Dahua
@@ -944,8 +951,10 @@ def motion_event_listener_worker():
                         print(f"\n⚡ [{worker_name}] 🚨 EVENT GERAKAN TERDETEKSI (Dahua CGI)!")
                         print(f"   • Jenis Event : VideoMotion (action: Start)")
                         print(f"   • Kamera      : Ch {channel_num} ({target_cam['name']})")
-                        m_res = take_nvr_snapshot(target_cam, is_motion_event=True, save_to_queue=False)
-                        thumb_path = m_res.get("webp_path") if m_res.get("success") else None
+                        thumb_path = None
+                        if motion_window_mgr.should_capture_thumbnail(channel_num):
+                            m_res = take_nvr_snapshot(target_cam, is_motion_event=True, save_to_queue=False)
+                            thumb_path = m_res.get("webp_path") if m_res.get("success") else None
                         motion_window_mgr.on_motion_event(target_cam, thumbnail_path=thumb_path)
 
         except requests.exceptions.RequestException as req_e:
