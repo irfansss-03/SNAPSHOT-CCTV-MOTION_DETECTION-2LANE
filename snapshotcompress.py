@@ -965,7 +965,7 @@ def upload_routine_worker(worker_id: int):
         try:
             with open(file_path, 'rb') as img_f:
                 files = {'file': (os.path.basename(file_path), img_f, 'image/webp')}
-                data = {'captured_at': captured_at, 'camera_name': camera_name, 'event_type': 'snapshot'}
+                data = {'captured_at': captured_at}
                 res = session.post(url, files=files, data=data, timeout=(10, 25))
                 status_code = res.status_code
 
@@ -1055,7 +1055,7 @@ def upload_motion_snapshot_worker(worker_id: int):
         try:
             with open(file_path, 'rb') as img_f:
                 files = {'file': (os.path.basename(file_path), img_f, 'image/webp')}
-                data = {'captured_at': captured_at, 'camera_name': camera_name, 'event_type': 'motion_snapshot', 'is_motion': '1'}
+                data = {'captured_at': captured_at}
                 res = session.post(url, files=files, data=data, timeout=(10, 25))
                 status_code = res.status_code
 
@@ -1153,7 +1153,7 @@ def upload_motion_video_worker(worker_id: int):
                     thumb_f = open(thumb_path, 'rb')
                     files['thumbnail'] = (os.path.basename(thumb_path), thumb_f, 'image/webp')
 
-                data = {'captured_at': captured_at, 'camera_name': camera_name, 'event_type': 'motion_video', 'is_motion': '1'}
+                data = {'captured_at': captured_at, 'cameraToken': camera_token}
                 res = session.post(url, files=files, data=data, timeout=(15, 60))
                 status_code = res.status_code
 

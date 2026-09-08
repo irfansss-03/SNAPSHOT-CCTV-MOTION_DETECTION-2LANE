@@ -19,52 +19,46 @@ Dokumentasi teknis dan panduan operasional resmi untuk **Maritime CCTV Snapshot,
 
 ## 1. Arsitektur Sistem Tri-Lane (3 Jalur API)
 
-```
+```text
                        ┌──────────────────────────────────────────────────────────┐
                        │            HIKVISION / DAHUA / ONVIF NVR (KAPAL)         │
                        └─────────────┬──────────────────────────────┬─────────────┘
                                      │                              │
-                        Port 80 / HTTP Event Stream       Port 554 / RTSP Playback
+                     Port 80 (ISAPI Native HTTP API)       Port 554 (RTSP Playback Track)
                                      │                              │
-                                     ▼                              ▼
-                           ┌──────────────────┐           ┌──────────────────┐
-                           │  MotionListener  │           │   FFmpeg Main    │
-                           │  (ISAPI/CGI/XML) │           │ (Snapshot Rutin) │
-                           └─────────┬────────┘           └─────────┬────────┘
-                                     │                              │
-                    ┌────────────────┴───────────────┐              │
-                    │                                │              │
-                    ▼                                ▼              │
-          ┌───────────────────┐            ┌───────────────────┐    │
-          │  JALUR 2: INSTAN  │            │  JALUR 3: BUFFER  │    │
-          │  Motion Snapshot  │            │  Windowing Video  │    │
-          │  (HTTP /picture)  │            │  (10s Cut & Merge)│    │
-          └─────────┬─────────┘            └─────────┬─────────┘    │
-                    │                                │              │
-                    ▼                                ▼              ▼
-          ┌───────────────────┐            ┌───────────────────────────────────┐
-          │  WebP Kompresi    │            │ 1. Transcode 360p (VA-API / CPU)  │
-          │  (< 10 KB, 360x270│            │ 2. Ekstrak Poster WebP Thumbnail  │
-          └─────────┬─────────┘            └─────────────────┬─────────────────┘
-                    │                                        │
-                    └───────────────────┬────────────────────┘
-                                        │
-                                        ▼
-                      ┌───────────────────────────────────┐
-                      │   SQLite WAL Queue (queue.db)     │
-                      └─────────────────┬─────────────────┘
-                                        │
-            ┌───────────────────────────┼───────────────────────────┐
-            │                           │                           │
-            ▼                           ▼                           ▼
-┌───────────────────────┐   ┌───────────────────────┐   ┌───────────────────────┐
-│   UPLOADER JALUR 1    │   │   UPLOADER JALUR 2    │   │   UPLOADER JALUR 3    │
-│    Snapshot Rutin     │   │    Motion Snapshot    │   │     Motion Video      │
-└───────────┬───────────┘   └───────────┬───────────┘   └───────────┬───────────┘
-            │                           │                           │
-            ▼                           ▼                           ▼
-POST .../snapshots          POST .../motion-snapshots   POST .../motions
-(60s Regular Monitor)       (< 0.3s Realtime Alert)     (MP4 360p + WebP Poster)
+                     ┌───────────────┴───────────────┐              │
+                     │                               │              │
+                     ▼                               ▼              ▼
+           ┌───────────────────┐           ┌───────────────────┐ ┌───────────────────┐
+           │ JALUR 1: RUTIN    │           │ JALUR 2: INSTAN   │ │ JALUR 3: BUFFER   │
+           │ Snapshot 60s      │           │ Motion Snapshot   │ │ Windowing Video   │
+           │ (ISAPI /picture)  │           │ (ISAPI /picture)  │ │ (10s Cut & Merge) │
+           └─────────┬─────────┘           └─────────┬─────────┘ └─────────┬─────────┘
+                     │                               │                     │
+                     ▼                               ▼                     ▼
+           ┌───────────────────┐           ┌───────────────────┐ ┌───────────────────┐
+           │  WebP Kompresi    │           │  WebP Kompresi    │ │ 1. Transcode 360p │
+           │  (< 10 KB, 360x270│           │  (< 10 KB, 360x270│ │ 2. WebP Thumbnail │
+           └─────────┬─────────┘           └─────────┬─────────┘ └─────────┬─────────┘
+                     │                               │                     │
+                     └───────────────────────┬───────┴─────────────────────┘
+                                             │
+                                             ▼
+                           ┌───────────────────────────────────┐
+                           │   SQLite WAL Queue (queue.db)     │
+                           └─────────────────┬─────────────────┘
+                                             │
+                 ┌───────────────────────────┼───────────────────────────┐
+                 │                           │                           │
+                 ▼                           ▼                           ▼
+     ┌───────────────────────┐   ┌───────────────────────┐   ┌───────────────────────┐
+     │   UPLOADER JALUR 1    │   │   UPLOADER JALUR 2    │   │   UPLOADER JALUR 3    │
+     │    Snapshot Rutin     │   │    Motion Snapshot    │   │     Motion Video      │
+     └───────────┬───────────┘   └───────────┬───────────┘   └───────────┬───────────┘
+                 │                           │                           │
+                 ▼                           ▼                           ▼
+     POST .../snapshots          POST .../motion-snapshots   POST .../motions
+     (File + captured_at)        (File + captured_at)        (File + Thumbnail + Token)
 ```
 
 ---
@@ -132,29 +126,25 @@ Sistem secara otomatis mendeteksi ketersediaan GPU Intel (misal Intel Atom Cherr
 * **Header**: `Content-Type: multipart/form-data`
 * **Form-Data**:
   * `captured_at`: `2026-09-08T08:44:28.463Z` (ISO-8601 UTC)
-  * `camera_name`: `cam1`
-  * `file`: `[binary image/webp]` (< 10 KB)
+  * `file`: `[binary image/webp]` (< 10 KB, Resolusi 360x270)
 
 ### 🚨 2. Endpoint Motion Snapshot Instan (Realtime Alert)
 * **Method**: `POST`
 * **URL**: `{base_url}/cctv/worker/cameras/{cameraToken}/motion-snapshots`
 * **Header**: `Content-Type: multipart/form-data`
-* **Form-Data**:
+* **Form-Data** *(Identik dengan Snapshot Rutin)*:
   * `captured_at`: `2026-09-08T08:32:29.000Z` (ISO-8601 UTC)
-  * `camera_name`: `cam1`
-  * `event_type`: `motion_snapshot`
-  * `file`: `[binary image/webp]` (< 10 KB)
+  * `file`: `[binary image/webp]` (< 10 KB, Resolusi 360x270)
 
 ### 🎬 3. Endpoint Motion Video (Batch Windowing)
 * **Method**: `POST`
 * **URL**: `{base_url}/cctv/worker/cameras/{cameraToken}/motions`
 * **Header**: `Content-Type: multipart/form-data`
 * **Form-Data**:
-  * `captured_at`: `2026-09-08T08:32:26.000Z` (ISO-8601 UTC)
-  * `camera_name`: `cam1`
-  * `duration_sec`: `30.0`
   * `file`: `[binary video/mp4]` (360p H.264 Faststart)
   * `thumbnail`: `[binary image/webp]` (Poster 360x270 px)
+  * `captured_at`: `2026-09-08T08:32:26.000Z` (ISO-8601 UTC)
+  * `cameraToken`: `{cameraToken}`
 
 ---
 
