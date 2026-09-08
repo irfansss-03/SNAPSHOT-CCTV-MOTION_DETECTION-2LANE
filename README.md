@@ -1,11 +1,11 @@
-# 🚢 Maritime NVR CCTV Snapshot, Realtime Motion & Video Alert Agent (Tri-Lane Edition)
+# 🚢 Maritime NVR CCTV Snapshot & Motion Video Alert Agent (Dual-Lane Edition)
 
-Dokumentasi teknis dan panduan operasional resmi untuk **Maritime CCTV Snapshot, Realtime Motion & Video Alert Agent (Tri-Lane Architecture)**. Sistem ini dirancang khusus untuk lingkungan maritim (kapal laut) dengan koneksi internet terbatas (Satelit VSAT / 4G Pesisir), menggabungkan tiga jalur pemantauan visual terpadu: **Snapshot Rutin Berkala**, **Snapshot Gerakan Realtime Instan**, dan **Klip Video Rangkuman Kejadian (360p) + Thumbnail Poster**.
+Dokumentasi teknis dan panduan operasional resmi untuk **Maritime CCTV Snapshot & Motion Video Alert Agent (Dual-Lane Architecture)**. Sistem ini dirancang khusus untuk lingkungan maritim (kapal laut) dengan koneksi internet terbatas (Satelit VSAT / 4G Pesisir), menyederhanakan pelaporan menjadi dua jalur visual terpadu: **Snapshot Rutin Berkala** dan **Klip Video Alert Kejadian (360p) + Real-time Snapshot sebagai Thumbnail Cover**.
 
 ---
 
 ## 📌 Daftar Isi
-1. [Arsitektur Sistem Tri-Lane (3 Jalur API)](#1-arsitektur-sistem-tri-lane-3-jalur-api)
+1. [Arsitektur Sistem Dual-Lane (2 Jalur API)](#1-arsitektur-sistem-dual-lane-2-jalur-api)
 2. [Fitur Utama & Keunggulan Maritim](#2-fitur-utama--keunggulan-maritim)
 3. [Multi-Brand Native Driver Engine (Tier 1 s/d Tier 4)](#3-multi-brand-native-driver-engine)
 4. [Mekanisme Video Windowing & Anti-Overlapping Formula](#4-mekanisme-video-windowing--anti-overlapping-formula)
@@ -17,7 +17,7 @@ Dokumentasi teknis dan panduan operasional resmi untuk **Maritime CCTV Snapshot,
 
 ---
 
-## 1. Arsitektur Sistem Tri-Lane (3 Jalur API)
+## 1. Arsitektur Sistem Dual-Lane (2 Jalur API)
 
 ```text
                        ┌──────────────────────────────────────────────────────────┐
@@ -29,49 +29,48 @@ Dokumentasi teknis dan panduan operasional resmi untuk **Maritime CCTV Snapshot,
                      ┌───────────────┴───────────────┐              │
                      │                               │              │
                      ▼                               ▼              ▼
-           ┌───────────────────┐           ┌───────────────────┐ ┌───────────────────┐
-           │ JALUR 1: RUTIN    │           │ JALUR 2: INSTAN   │ │ JALUR 3: BUFFER   │
-           │ Snapshot 60s      │           │ Motion Snapshot   │ │ Windowing Video   │
-           │ (ISAPI /picture)  │           │ (ISAPI /picture)  │ │ (10s Cut & Merge) │
-           └─────────┬─────────┘           └─────────┬─────────┘ └─────────┬─────────┘
-                     │                               │                     │
-                     ▼                               ▼                     ▼
-           ┌───────────────────┐           ┌───────────────────┐ ┌───────────────────┐
-           │  WebP Kompresi    │           │  WebP Kompresi    │ │ 1. Transcode 360p │
-           │  (< 10 KB, 360x270│           │  (< 10 KB, 360x270│ │ 2. WebP Thumbnail │
-           └─────────┬─────────┘           └─────────┬─────────┘ └─────────┬─────────┘
-                     │                               │                     │
-                     └───────────────────────┬───────┴─────────────────────┘
+           ┌───────────────────┐           ┌───────────────────────────────────┐
+           │ JALUR 1: RUTIN    │           │ JALUR 2: MOTION ALERT VIDEO       │
+           │ Snapshot 60s      │           │ 1. Snapshot Realtime -> Thumbnail │
+           │ (ISAPI /picture)  │           │ 2. Windowing Video (10s Cut/Merge)│
+           └─────────┬─────────┘           └─────────────────┬─────────────────┘
+                     │                                       │
+                     ▼                                       ▼
+           ┌───────────────────┐           ┌───────────────────────────────────┐
+           │  WebP Kompresi    │           │ 1. Transcode 360p (Intel VA-API)  │
+           │  (< 10 KB, 360x270│           │ 2. WebP Thumbnail Cover (< 10 KB) │
+           └─────────┬─────────┘           └─────────────────┬─────────────────┘
+                     │                                       │
+                     └───────────────────────┬───────────────┘
                                              │
                                              ▼
                            ┌───────────────────────────────────┐
                            │   SQLite WAL Queue (queue.db)     │
                            └─────────────────┬─────────────────┘
                                              │
-                 ┌───────────────────────────┼───────────────────────────┐
-                 │                           │                           │
-                 ▼                           ▼                           ▼
-     ┌───────────────────────┐   ┌───────────────────────┐   ┌───────────────────────┐
-     │   UPLOADER JALUR 1    │   │   UPLOADER JALUR 2    │   │   UPLOADER JALUR 3    │
-     │    Snapshot Rutin     │   │    Motion Snapshot    │   │     Motion Video      │
-     └───────────┬───────────┘   └───────────┬───────────┘   └───────────┬───────────┘
-                 │                           │                           │
-                 ▼                           ▼                           ▼
-     POST .../snapshots          POST .../motion-snapshots   POST .../motions
-     (File + captured_at)        (File + captured_at)        (File + Thumbnail + Token)
+                                 ┌───────────┴───────────┐
+                                 │                       │
+                                 ▼                       ▼
+                     ┌───────────────────────┐   ┌───────────────────────┐
+                     │   UPLOADER JALUR 1    │   │   UPLOADER JALUR 2    │
+                     │    Snapshot Rutin     │   │     Motion Video      │
+                     └───────────┬───────────┘   └───────────┬───────────┘
+                                 │                           │
+                                 ▼                           ▼
+                     POST .../snapshots          POST .../motions
+                     (File + captured_at)        (File + Thumbnail + Token)
 ```
 
 ---
 
 ## 2. Fitur Utama & Keunggulan Maritim
 
-1. **Tri-Lane Zero-Blocking Architecture**:
+1. **Dual-Lane High-Efficiency Architecture**:
    - **Jalur 1 (Rutin)**: Mengunggah snapshot periodik (60s) ke `/snapshots`.
-   - **Jalur 2 (Motion Snapshot)**: Mengunggah foto bukti gerakan seketika ($\le 0.3$ detik) ke `/motion-snapshots`.
-   - **Jalur 3 (Motion Video)**: Mengakumulasikan klip kejadian selama rentang waktu window (misal 5 menit), di-transcode ke 360p, lalu diunggah ke `/motions` lengkap dengan poster thumbnail.
+   - **Jalur 2 (Motion Video Alert + Realtime Thumbnail)**: Mengakumulasikan klip kejadian selama rentang waktu window (misal 5 menit), di-transcode ke 360p (via Intel VA-API GPU), lalu diunggah ke `/motions` lengkap dengan snapshot realtime sebagai **thumbnail poster cover**.
 2. **Koneksi Satelit Super Hemat**:
-   - Foto WebP selalu berada di bawah **`< 10 KB`** (rata-rata 9.0 – 9.2 KB).
-   - Video kejadian 30 detik beresolusi 360p hanya memakan bandwidth **`< 1 MB`** (960 KB).
+   - Foto WebP selalu berada di bawah **`< 10 KB`** (rata-rata 8.9 – 9.2 KB).
+   - Video kejadian 360p hasil kompresi Intel VA-API hanya memakan bandwidth sangat efisien (misal 50s $\approx$ 1.8 MB, 20s $\approx$ 712 KB).
 3. **Ketahanan Jaringan (*Store & Forward Offline-First*)**:
    - Jika kapal berada di area *blank spot* tanpa sinyal satelit/4G, semua snapshot dan video ditampung aman di SQLite WAL lokal (`queue.db`).
    - Begitu sinyal tersambung kembali, seluruh antrean otomatis terkirim berurutan tanpa ada data yang hilang.
@@ -85,7 +84,7 @@ Dokumentasi teknis dan panduan operasional resmi untuk **Maritime CCTV Snapshot,
 
 Sistem dilengkapi mekanisme 4-tier fallback cerdas yang kompatibel dengan berbagai merk NVR / IP Camera:
 
-* **Tier 1 (Hikvision ISAPI Native)**: `GET /ISAPI/Streaming/channels/{ch}01/picture` (Response instan **0.13s – 0.20s**).
+* **Tier 1 (Hikvision ISAPI Native)**: `GET /ISAPI/Streaming/channels/{ch}01/picture` (Response instan **0.08s – 0.25s**).
 * **Tier 2 (Dahua CGI Native)**: `GET /cgi-bin/snapshot.cgi?channel={ch}`.
 * **Tier 3 (ONVIF PullPoint Native)**: Standard Snapshot URI ONVIF XML.
 * **Tier 4 (Universal RTSP Fallback)**: Mengambil I-Frame tunggal via koneksi FFmpeg TCP RTSP.
@@ -109,16 +108,19 @@ Untuk mencegah ledakan file video di server, kejadian gerakan di-buffer dalam je
 
 ## 5. Akselerasi Grafis Hardware Intel VA-API & Transcode 360p
 
-Sistem secara otomatis mendeteksi ketersediaan GPU Intel (misal Intel Atom CherryView, Celeron Braswell, Core i-series pada Axiomtek / Asus Mini PC):
+Sistem secara otomatis mendeteksi ketersediaan GPU Intel (misal Intel Celeron N3160 Braswell/CherryView, Intel Atom, Core i-series pada Axiomtek / Asus Mini PC):
 
 * **Deteksi Otomatis Node**: Menguji keberadaan `/dev/dri/renderD128`.
-* **Hardware Encoder**: Menggunakan `h264_vaapi` dengan filter `scale_vaapi=w=640:h=-2` (Beban CPU nyaris 0%).
+* **Hardware Encoder**: Menggunakan `h264_vaapi` dengan filter `scale_vaapi=w=640:h=360` dan `-qp 24` (Beban CPU nyaris 0%, kecepatan transcode $> 1.6\times$ realtime).
+* **Driver Environment**: Otomatis mengonfigurasi `LIBVA_DRIVER_NAME=i965` untuk arsitektur Intel Gen 8 (CherryView).
 * **Auto-Fallback Cerdas**: Jika driver VA-API belum aktif atau device tidak tersedia, sistem otomatis beralih ke software CPU FFMPEG (`libx264 -preset veryfast -crf 23`) dengan standar kualitas visual jernih.
-* **Thumbnail Poster Extraction**: Otomatis mengekstrak frame pertama menjadi gambar poster WebP 360x270 berukuran $\approx 18\text{ KB}$.
+* **Thumbnail Cover Integration**: Snapshot realtime saat gerakan pertama terjadi otomatis dipasangkan sebagai cover thumbnail WebP 360x270 ($\approx 18\text{ KB}$) untuk berkas video alert.
 
 ---
 
 ## 6. Kontrak API Server Darat (REST API)
+
+Server darat hanya menerima **2 Payload API**:
 
 ### 📸 1. Endpoint Snapshot Rutin (Per-Menit)
 * **Method**: `POST`
@@ -130,24 +132,13 @@ Sistem secara otomatis mendeteksi ketersediaan GPU Intel (misal Intel Atom Cherr
   * `event_type`: `snapshot`
   * `file`: `[binary image/webp]` (< 10 KB, Resolusi 360x270)
 
-### 🚨 2. Endpoint Motion Snapshot Instan (Realtime Alert)
-* **Method**: `POST`
-* **URL**: `{base_url}/cctv/worker/cameras/{cameraToken}/motion-snapshots`
-* **Header**: `Content-Type: multipart/form-data`
-* **Form-Data**:
-  * `captured_at`: `2026-09-08T08:32:29.000Z` (ISO-8601 UTC)
-  * `camera_name`: `cam1`
-  * `event_type`: `motion_snapshot`
-  * `is_motion`: `1`
-  * `file`: `[binary image/webp]` (< 10 KB, Resolusi 360x270)
-
-### 🎬 3. Endpoint Motion Video (Batch Windowing)
+### 🎬 2. Endpoint Motion Video Alert (Batch 5 Menit + Realtime Thumbnail)
 * **Method**: `POST`
 * **URL**: `{base_url}/cctv/worker/cameras/{cameraToken}/motions`
 * **Header**: `Content-Type: multipart/form-data`
 * **Form-Data**:
-  * `file`: `[binary video/mp4]` (360p H.264 Faststart)
-  * `thumbnail`: `[binary image/webp]` (Poster 360x270 px)
+  * `file`: `[binary video/mp4]` (360p H.264 Faststart, gabungan klip gerakan)
+  * `thumbnail`: `[binary image/webp]` (Snapshot realtime kejadian sebagai Poster, Resolusi 360x270 < 10 KB)
   * `captured_at`: `2026-09-08T08:32:26.000Z` (ISO-8601 UTC)
   * `camera_name`: `cam1`
   * `event_type`: `motion_video`
@@ -170,7 +161,6 @@ Sistem secara otomatis mendeteksi ketersediaan GPU Intel (misal Intel Atom Cherr
     "server": {
         "base_url": "https://api.vsemar.com/api/v1",
         "snapshot_endpoint": "/cctv/worker/cameras/{cameraToken}/snapshots",
-        "motion_snapshot_endpoint": "/cctv/worker/cameras/{cameraToken}/motion-snapshots",
         "motion_video_endpoint": "/cctv/worker/cameras/{cameraToken}/motions"
     },
     "agent": {
@@ -180,7 +170,7 @@ Sistem secara otomatis mendeteksi ketersediaan GPU Intel (misal Intel Atom Cherr
         "motion_window_sec": 300,
         "motion_clip_duration_sec": 10,
         "motion_pre_event_sec": 3,
-        "motion_cooldown_sec": 3,
+        "motion_cooldown_sec": 0,
         "motion_capture_delay_sec": 0.0,
         "vaapi_device": "/dev/dri/renderD128",
         "video_scale_w": 640,
@@ -191,7 +181,7 @@ Sistem secara otomatis mendeteksi ketersediaan GPU Intel (misal Intel Atom Cherr
     "cameras": [
         {
             "channel": 1,
-            "name": "Kamera Haluan",
+            "name": "cam1",
             "token": "5dL4C7t44nfC5IqkKJkQBh4kUBQqEg3h"
         }
     ]

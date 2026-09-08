@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # =============================================================================
-# 🚢 MARITIME CCTV SNAPSHOT & MOTION DETECTION AGENT (TRI-LANE ARCHITECTURE)
+# 🚢 MARITIME CCTV SNAPSHOT & MOTION DETECTION AGENT (DUAL-LANE ARCHITECTURE)
 # =============================================================================
 # 1. Jalur API 1: Snapshot Rutin (Per-Menit)     -> POST /cctv/worker/cameras/{token}/snapshots
-# 2. Jalur API 2: Motion Snapshot (Instan Event) -> POST /cctv/worker/cameras/{token}/motion-snapshots
-# 3. Jalur API 3: Motion Video (Batch 5 Menit)   -> POST /cctv/worker/cameras/{token}/motions
+# 2. Jalur API 2: Motion Video Alert (5 Menit)   -> POST /cctv/worker/cameras/{token}/motions
+#    (Dengan Real-time Snapshot kejadian otomatis dipasangkan sebagai Thumbnail Cover WebP)
 #
 # Fitur Utama:
 # - Multi-Brand Driver: Hikvision (ISAPI), Dahua (CGI), ONVIF (PullPoint), Fallback RTSP
@@ -21,6 +21,7 @@ import json
 import sqlite3
 import subprocess
 import threading
+import shutil
 import re
 from datetime import datetime, timezone, timedelta
 import cv2
@@ -62,8 +63,8 @@ class DailyRotatedLogger:
         self.terminal.write(message)
         with self.lock:
             try:
-                fh = self._get_log_file()
-                fh.write(message)
+                f = self._get_log_file()
+                f.write(message)
             except Exception:
                 pass
 
@@ -76,17 +77,20 @@ class DailyRotatedLogger:
                 except Exception:
                     pass
 
-sys.stdout = DailyRotatedLogger(os.path.join(BASE_DIR, "logs"))
+LOGS_DIR = os.path.join(BASE_DIR, "logs")
+daily_logger = DailyRotatedLogger(LOGS_DIR)
+sys.stdout = daily_logger
+sys.stderr = daily_logger
 
 # =============================================================================
-# LOAD CONFIG.JSON
+# LOAD CONFIGURATION (config.json)
 # =============================================================================
-CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
-if not os.path.exists(CONFIG_FILE):
-    print(f"[FATAL] File konfigurasi '{CONFIG_FILE}' tidak ditemukan!")
+CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+if not os.path.exists(CONFIG_PATH):
+    print(f"[FATAL] File konfigurasi tidak ditemukan: {CONFIG_PATH}")
     sys.exit(1)
 
-with open(CONFIG_FILE, "r") as f:
+with open(CONFIG_PATH, "r") as f:
     CFG = json.load(f)
 
 NVR_IP                      = CFG["nvr"]["ip"]
@@ -98,7 +102,6 @@ NVR_BRAND                   = CFG["nvr"].get("brand", "hikvision").lower()
 
 SERVER_BASE_URL             = CFG["server"]["base_url"]
 SNAPSHOT_ENDPOINT_TMPL      = CFG["server"].get("snapshot_endpoint", "/cctv/worker/cameras/{cameraToken}/snapshots")
-MOTION_SNAPSHOT_ENDPOINT_TMPL = CFG["server"].get("motion_snapshot_endpoint", "/cctv/worker/cameras/{cameraToken}/motion-snapshots")
 MOTION_VIDEO_ENDPOINT_TMPL  = CFG["server"].get("motion_video_endpoint", "/cctv/worker/cameras/{cameraToken}/motions")
 
 SNAPSHOT_INTERVAL_SEC       = CFG["agent"].get("snapshot_interval_sec", 60)
@@ -108,7 +111,7 @@ HD_RETENTION_DAYS           = CFG["agent"].get("hd_retention_days", 30)
 MOTION_WINDOW_SEC           = CFG["agent"].get("motion_window_sec", 300)       # 5 Menit Windowing
 MOTION_CLIP_DURATION_SEC    = CFG["agent"].get("motion_clip_duration_sec", 10) # 10 Detik per klip
 MOTION_PRE_EVENT_SEC        = CFG["agent"].get("motion_pre_event_sec", 3)      # 3 Detik before-event
-MOTION_COOLDOWN_SEC         = CFG["agent"].get("motion_cooldown_sec", 3)
+MOTION_COOLDOWN_SEC         = CFG["agent"].get("motion_cooldown_sec", 0)
 MOTION_CAPTURE_DELAY_SEC    = float(CFG["agent"].get("motion_capture_delay_sec", 0.0))
 
 VAAPI_DEVICE                = CFG["agent"].get("vaapi_device", "/dev/dri/renderD128")
@@ -274,12 +277,13 @@ def capture_raw_hd_snapshot(cam_info: dict, hd_filepath: str, is_motion_event: b
 # =============================================================================
 # ENGINE KOMPRESI WEBP (< 10 KB) & PIPELINE DATABASE
 # =============================================================================
-def take_nvr_snapshot(cam_info: dict, is_motion_event: bool = False, event_type: str = "snapshot") -> dict:
+def take_nvr_snapshot(cam_info: dict, is_motion_event: bool = False, event_type: str = "snapshot", save_to_queue: bool = True) -> dict:
     """
     Mengambil snapshot dan mengompres ke WebP <10KB:
     1. Ambil HD Asli (.jpg) dengan log tingkat Tier yang berhasil
     2. Kompres ke WebP Adaptif (Statik 360x270, cwebp -size 9500) dengan log rasio penghematan
-    3. Simpan ke antrean queue.db sesuai event_type ('snapshot' atau 'motion_snapshot')
+    3. Jika save_to_queue=True: Simpan ke antrean queue.db untuk upload rutin
+       Jika save_to_queue=False: Disimpan sebagai thumbnail video motion alert
     """
     channel_num = cam_info["channel"]
     camera_token = cam_info["token"]
@@ -308,7 +312,7 @@ def take_nvr_snapshot(cam_info: dict, is_motion_event: bool = False, event_type:
         return {"success": False, "channel": channel_num, "error": f"Gagal capture ({tier_used})"}
 
     hd_size_kb = os.path.getsize(hd_filepath) / 1024.0
-    tag = "🚨 [MOTION SNAPSHOT]" if is_motion_event else "📸 [ROUTINE SNAPSHOT]"
+    tag = "🖼️ [MOTION THUMBNAIL]" if is_motion_event else "📸 [ROUTINE SNAPSHOT]"
     print(f"   {tag} Ch {channel_num} ({cam_info['name']}) -> {tier_used} (Durasi: {cap_dur:.2f}s | Berkas HD: {hd_size_kb:.1f} KB)")
 
     # 2. Kompresi ke WebP Adaptif (< 10 KB, Statik 360x270)
@@ -385,16 +389,19 @@ def take_nvr_snapshot(cam_info: dict, is_motion_event: bool = False, event_type:
     savings = max(0, (1 - (final_webp_size_kb / hd_size_kb)) * 100) if hd_size_kb > 0 else 0
     print(f"   🗜️ [WebP Kompresi Ch {channel_num}] Resolusi: {orig_w}x{orig_h} -> {TARGET_W}x{TARGET_H} | Ukuran: {hd_size_kb:.1f} KB -> {final_webp_size_kb:.2f} KB (Hemat: {savings:.1f}%) [Level {used_prep_level}, Target <10KB OK]")
 
-    # 3. Simpan ke antrean SQLite
-    with db_lock:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('''
-            INSERT INTO queue (camera_token, camera_name, file_path, captured_at, retry_count, is_uploading, event_type)
-            VALUES (?, ?, ?, ?, 0, 0, ?)
-        ''', (camera_token, cam_info["name"], webp_filepath, now_str, event_type))
-        conn.commit()
-        conn.close()
+    # 3. Simpan ke antrean SQLite jika save_to_queue aktif
+    if save_to_queue:
+        with db_lock:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''
+                INSERT INTO queue (camera_token, camera_name, file_path, captured_at, retry_count, is_uploading, event_type)
+                VALUES (?, ?, ?, ?, 0, 0, ?)
+            ''', (camera_token, cam_info["name"], webp_filepath, now_str, event_type))
+            conn.commit()
+            conn.close()
+    else:
+        print(f"   ✓ [Motion Cover] Snapshot realtime disimpan sebagai thumbnail video alert: {webp_filename}")
 
     return {
         "success": True,
@@ -504,15 +511,20 @@ class MotionWindowManager:
                 "window_start_time": 0.0,
                 "clips": [],                # list of temp clip filepaths
                 "last_recorded_end_dt": None, # datetime NVR end time
-                "is_busy_recording": False
+                "is_busy_recording": False,
+                "thumbnail_path": None      # Realtime WebP snapshot sebagai cover video
             }
         return self.channels[channel_num]
 
-    def on_motion_event(self, cam_info: dict, nvr_datetime_str: str = None):
+    def on_motion_event(self, cam_info: dict, nvr_datetime_str: str = None, thumbnail_path: str = None):
         """Dipanggil saat ada event gerakan terverifikasi dari NVR."""
         channel_num = cam_info["channel"]
         with self.lock:
             cstate = self._get_channel_state(channel_num)
+
+            # Simpan snapshot gerakan pertama pada window ini sebagai cover thumbnail
+            if cstate["thumbnail_path"] is None and thumbnail_path and os.path.exists(thumbnail_path):
+                cstate["thumbnail_path"] = thumbnail_path
 
             # Jika sedang memotong klip sebelumnya, abaikan spam alert XML
             if cstate["is_busy_recording"]:
@@ -670,8 +682,10 @@ class MotionWindowManager:
 
                 # Window Selesai! Ambil daftar klip dan reset status
                 clips_to_merge = list(cstate["clips"])
+                thumb_to_use = cstate.get("thumbnail_path")
                 cstate["state"] = "IDLE"
                 cstate["clips"] = []
+                cstate["thumbnail_path"] = None
                 cstate["last_recorded_end_dt"] = None
 
             win_str = f"{MOTION_WINDOW_SEC // 60} Menit" if MOTION_WINDOW_SEC % 60 == 0 else f"{MOTION_WINDOW_SEC} Detik"
@@ -684,11 +698,11 @@ class MotionWindowManager:
             # Jalankan proses merge dan transcode di background thread
             threading.Thread(
                 target=self._finalize_video_thread,
-                args=(cam_token, cam_name, ch_num, clips_to_merge),
+                args=(cam_token, cam_name, ch_num, clips_to_merge, thumb_to_use),
                 daemon=True
             ).start()
 
-    def _finalize_video_thread(self, cam_token: str, cam_name: str, ch_num: int, clips: list):
+    def _finalize_video_thread(self, cam_token: str, cam_name: str, ch_num: int, clips: list, thumb_to_use: str = None):
         """Menggabungkan potongan klip dan melakukan transcode ke 360p."""
         unix_ms = str(int(time.time() * 1000))
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -749,26 +763,36 @@ class MotionWindowManager:
 
             final_size_kb = os.path.getsize(final_video_path) / 1024.0
 
-            # 3. Otomatis Ekstrak 1 Frame Thumbnail WebP dari Video untuk Poster Dashboard
+            # 3. Gunakan Realtime Snapshot sebagai Thumbnail Poster WebP
             thumb_path = final_video_path.replace('.mp4', '_thumb.webp')
-            thumb_cmd = [
-                FFMPEG_CMD, "-y",
-                "-ss", "00:00:01",
-                "-i", final_video_path,
-                "-vframes", "1",
-                "-vf", "scale=360:270",
-                thumb_path
-            ]
             t_size_kb = 0.0
-            try:
-                subprocess.run(thumb_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                if os.path.exists(thumb_path):
+            if thumb_to_use and os.path.exists(thumb_to_use):
+                try:
+                    shutil.copy2(thumb_to_use, thumb_path)
                     t_size_kb = os.path.getsize(thumb_path) / 1024.0
-                    print(f"   🖼️ [Thumbnail Poster Ch {ch_num}] Ekstraksi 1 frame WebP poster (360x270) siap: {os.path.basename(thumb_path)} ({t_size_kb:.1f} KB)")
-            except Exception:
-                pass
+                    print(f"   🖼️ [Thumbnail Poster Ch {ch_num}] Snapshot kejadian dipasangkan sebagai cover video: {os.path.basename(thumb_path)} ({t_size_kb:.1f} KB)")
+                except Exception:
+                    pass
 
-            print(f"   🚀 [Queue Jalur 3] Video ({final_size_kb:.1f} KB) + Poster ({t_size_kb:.1f} KB) berhasil masuk antrean upload (/motions)!")
+            # Fallback jika thumbnail snapshot belum ada: Ekstrak 1 frame dari video 360p
+            if not os.path.exists(thumb_path):
+                thumb_cmd = [
+                    FFMPEG_CMD, "-y",
+                    "-ss", "00:00:01",
+                    "-i", final_video_path,
+                    "-vframes", "1",
+                    "-vf", "scale=360:270",
+                    thumb_path
+                ]
+                try:
+                    subprocess.run(thumb_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    if os.path.exists(thumb_path):
+                        t_size_kb = os.path.getsize(thumb_path) / 1024.0
+                        print(f"   🖼️ [Thumbnail Poster Ch {ch_num}] Ekstraksi 1 frame WebP poster (360x270) siap: {os.path.basename(thumb_path)} ({t_size_kb:.1f} KB)")
+                except Exception:
+                    pass
+
+            print(f"   🚀 [Queue Jalur 2] Video ({final_size_kb:.1f} KB) + Poster ({t_size_kb:.1f} KB) berhasil masuk antrean upload (/motions)!")
 
             # 4. Masukkan ke Antrean queue.db Jalur Video (event_type = 'motion_video')
             with db_lock:
@@ -902,13 +926,12 @@ def motion_event_listener_worker():
                                     print(f"   • Delay Jepret: Menunggu {MOTION_CAPTURE_DELAY_SEC}s...")
                                     time.sleep(MOTION_CAPTURE_DELAY_SEC)
 
-                                # 1. SNAPSHOT INSTAN: Langsung kirim ke Jalur 2
-                                m_res = take_nvr_snapshot(target_cam, is_motion_event=True, event_type="motion_snapshot")
-                                if m_res["success"]:
-                                    print(f"   ✓ [Jalur 2 Motion Snapshot] Sukses masuk antrean prioritas!")
+                                # 1. SNAPSHOT REALTIME INSTAN: Digunakan sebagai Thumbnail Poster Video Alert
+                                m_res = take_nvr_snapshot(target_cam, is_motion_event=True, save_to_queue=False)
+                                thumb_path = m_res.get("webp_path") if m_res.get("success") else None
 
-                                # 2. VIDEO 5 MENIT: Masukkan ke Window Manager
-                                motion_window_mgr.on_motion_event(target_cam, nvr_dt_str)
+                                # 2. VIDEO 5 MENIT: Masukkan ke Window Manager bersama Thumbnail Cover
+                                motion_window_mgr.on_motion_event(target_cam, nvr_dt_str, thumbnail_path=thumb_path)
 
                 # Parse Event Dahua
                 elif NVR_BRAND == "dahua" and "Code=VideoMotion" in buffer:
@@ -921,8 +944,9 @@ def motion_event_listener_worker():
                         print(f"\n⚡ [{worker_name}] 🚨 EVENT GERAKAN TERDETEKSI (Dahua CGI)!")
                         print(f"   • Jenis Event : VideoMotion (action: Start)")
                         print(f"   • Kamera      : Ch {channel_num} ({target_cam['name']})")
-                        m_res = take_nvr_snapshot(target_cam, is_motion_event=True, event_type="motion_snapshot")
-                        motion_window_mgr.on_motion_event(target_cam)
+                        m_res = take_nvr_snapshot(target_cam, is_motion_event=True, save_to_queue=False)
+                        thumb_path = m_res.get("webp_path") if m_res.get("success") else None
+                        motion_window_mgr.on_motion_event(target_cam, thumbnail_path=thumb_path)
 
         except requests.exceptions.RequestException as req_e:
             print(f"[{datetime.now()}] [{worker_name}] ⚠️ Koneksi Event Stream terputus ({req_e}). Reconnecting in 5s...")
@@ -1022,96 +1046,7 @@ def upload_routine_worker(worker_id: int):
                 time.sleep(2)
 
 # =============================================================================
-# THREAD 3B: INSTANT MOTION SNAPSHOT UPLOADER WORKER (JALUR 2)
-# =============================================================================
-def upload_motion_snapshot_worker(worker_id: int):
-    """Thread Pengirim Snapshot Instan Gerakan ke Server Darat (/motion-snapshots)."""
-    worker_name = f"🚨 Uploader-MotionSnap-{worker_id}"
-    session = requests.Session()
-    adapter = requests.adapters.HTTPAdapter(pool_connections=5, pool_maxsize=5, max_retries=1)
-    session.mount('https://', adapter)
-    session.mount('http://', adapter)
-
-    while True:
-        server_connected.wait()
-
-        with db_lock:
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute('''
-                SELECT id, camera_token, camera_name, file_path, captured_at, retry_count 
-                FROM queue 
-                WHERE is_uploading = 0 AND event_type = 'motion_snapshot'
-                ORDER BY id ASC LIMIT 1
-            ''')
-            row = c.fetchone()
-            if row:
-                queue_id, camera_token, camera_name, file_path, captured_at, retry_count = row
-                c.execute("UPDATE queue SET is_uploading = 1 WHERE id = ?", (queue_id,))
-                conn.commit()
-            conn.close()
-
-        if not row:
-            time.sleep(0.5)
-            continue
-
-        if not os.path.exists(file_path):
-            with db_lock:
-                conn = sqlite3.connect(DB_PATH)
-                conn.execute("DELETE FROM queue WHERE id = ?", (queue_id,))
-                conn.commit()
-                conn.close()
-            continue
-
-        url = f"{SERVER_BASE_URL.rstrip('/')}{MOTION_SNAPSHOT_ENDPOINT_TMPL.format(cameraToken=camera_token)}"
-        success = False
-        status_code = None
-
-        try:
-            with open(file_path, 'rb') as img_f:
-                files = {'file': (os.path.basename(file_path), img_f, 'image/webp')}
-                data = {'captured_at': captured_at, 'camera_name': camera_name, 'event_type': 'motion_snapshot', 'is_motion': '1'}
-                res = session.post(url, files=files, data=data, timeout=(10, 25))
-                status_code = res.status_code
-
-            if status_code in [200, 201]:
-                success = True
-                print(f"  -> [{worker_name}] ⚡ ✅ Upload Motion Snapshot Berhasil (HTTP {status_code}) | {os.path.basename(file_path)}")
-            elif status_code in [400, 401, 403, 404, 422]:
-                print(f"  -> [{worker_name}] ❌ HTTP {status_code} Client Rejection! Auto-Purge Queue ID {queue_id}")
-                with db_lock:
-                    conn = sqlite3.connect(DB_PATH)
-                    conn.execute("DELETE FROM queue WHERE id = ?", (queue_id,))
-                    conn.commit()
-                    conn.close()
-                try:
-                    os.remove(file_path)
-                except Exception:
-                    pass
-                continue
-
-        except Exception as e:
-            pass
-
-        with db_lock:
-            conn = sqlite3.connect(DB_PATH)
-            if success:
-                conn.execute("DELETE FROM queue WHERE id = ?", (queue_id,))
-                conn.commit()
-                conn.close()
-                try:
-                    os.remove(file_path)
-                except Exception:
-                    pass
-            else:
-                server_connected.clear()
-                conn.execute("UPDATE queue SET is_uploading = 0, retry_count = retry_count + 1 WHERE id = ?", (queue_id,))
-                conn.commit()
-                conn.close()
-                time.sleep(2)
-
-# =============================================================================
-# THREAD 3C: MOTION VIDEO UPLOADER WORKER (JALUR 3)
+# THREAD 3B: MOTION VIDEO UPLOADER WORKER (JALUR 2 - VIDEO 5 MENIT + THUMBNAIL)
 # =============================================================================
 def upload_motion_video_worker(worker_id: int):
     """Thread Pengirim Video Gabungan 5 Menit ke Server Darat (/motions)."""
@@ -1268,7 +1203,7 @@ def connection_check_worker():
 # =============================================================================
 def main():
     print("=" * 75)
-    print(" 🚢 MARITIME CCTV AGENT - TRI-LANE SNAPSHOT & MOTION DETECTION")
+    print(" 🚢 MARITIME CCTV AGENT - DUAL-LANE (ROUTINE SNAPSHOT & MOTION VIDEO ALERT)")
     print(f" NVR IP      : {NVR_IP}:{NVR_PORT} (HTTP: {NVR_HTTP_PORT}) | Brand: {NVR_BRAND.upper()}")
     print(f" Server URL  : {SERVER_BASE_URL}")
     print(f" Kamera      : {len(CAMERAS)} Unit CCTV Aktif")
@@ -1315,12 +1250,7 @@ def main():
         t_up_routine = threading.Thread(target=upload_routine_worker, args=(i+1,), daemon=True, name=f"Thread-UploaderRoutine-{i+1}")
         threads.append(t_up_routine)
 
-    # 6. Worker Pool Jalur 2: VIP Motion Snapshot Uploaders (1 worker per kamera)
-    for i in range(len(CAMERAS)):
-        t_up_msnap = threading.Thread(target=upload_motion_snapshot_worker, args=(i+1,), daemon=True, name=f"Thread-UploaderMotionSnap-{i+1}")
-        threads.append(t_up_msnap)
-
-    # 7. Worker Pool Jalur 3: Dedicated Motion Video Uploader (1 worker)
+    # 6. Worker Pool Jalur 2: Dedicated Motion Video Uploader (1 worker)
     t_up_mvid = threading.Thread(target=upload_motion_video_worker, args=(1,), daemon=True, name="Thread-UploaderMotionVid-1")
     threads.append(t_up_mvid)
 

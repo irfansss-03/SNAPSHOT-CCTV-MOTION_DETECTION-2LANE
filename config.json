@@ -10,7 +10,6 @@
     "server": {
         "base_url": "http://127.0.0.1:5000/api/v1",
         "snapshot_endpoint": "/cctv/worker/cameras/{cameraToken}/snapshots",
-        "motion_snapshot_endpoint": "/cctv/worker/cameras/{cameraToken}/motion-snapshots",
         "motion_video_endpoint": "/cctv/worker/cameras/{cameraToken}/motions"
     },
     "agent": {
@@ -20,7 +19,7 @@
         "motion_window_sec": 300,
         "motion_clip_duration_sec": 10,
         "motion_pre_event_sec": 3,
-        "motion_cooldown_sec": 3,
+        "motion_cooldown_sec": 0,
         "motion_capture_delay_sec": 0.0,
         "vaapi_device": "/dev/dri/renderD128",
         "video_scale_w": 640,
