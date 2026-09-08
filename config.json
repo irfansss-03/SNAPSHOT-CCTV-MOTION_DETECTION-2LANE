@@ -1,0 +1,38 @@
+{
+    "nvr": {
+        "ip": "192.168.7.184",
+        "port": 554,
+        "http_port": 80,
+        "user": "admin",
+        "pass": "ptspts2023",
+        "brand": "hikvision"
+    },
+    "server": {
+        "base_url": "http://127.0.0.1:5000/api/v1",
+        "snapshot_endpoint": "/cctv/worker/cameras/{cameraToken}/snapshots",
+        "motion_snapshot_endpoint": "/cctv/worker/cameras/{cameraToken}/motion-snapshots",
+        "motion_video_endpoint": "/cctv/worker/cameras/{cameraToken}/motions"
+    },
+    "agent": {
+        "snapshot_interval_sec": 60,
+        "connection_check_interval_sec": 60,
+        "hd_retention_days": 30,
+        "motion_window_sec": 300,
+        "motion_clip_duration_sec": 10,
+        "motion_pre_event_sec": 3,
+        "motion_cooldown_sec": 3,
+        "motion_capture_delay_sec": 0.0,
+        "vaapi_device": "/dev/dri/renderD128",
+        "video_scale_w": 640,
+        "video_fps": 15,
+        "mock_mode": false,
+        "mock_video": "cctv.kapal.mp4"
+    },
+    "cameras": [
+        {
+            "channel": 1,
+            "name": "cam1",
+            "token": "5dL4C7t44nfC5IqkKJkQBh4kUBQqEg3h"
+        }
+    ]
+}
