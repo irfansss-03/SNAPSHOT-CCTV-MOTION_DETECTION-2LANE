@@ -946,13 +946,14 @@ def motion_event_listener_worker():
 
                     if is_motion and is_active:
                         ch_match = re.search(r"<(?:dynChannelID|channelID)>(\d+)</(?:dynChannelID|channelID)>", xml_block)
-                        channel_num = int(ch_match.group(1)) if ch_match else (CAMERAS[0]["channel"] if len(CAMERAS) == 1 else 1)
+                        channel_num = int(ch_match.group(1)) if ch_match else None
 
                         dt_match = re.search(r"<dateTime>([^<]+)</dateTime>", xml_block)
                         nvr_dt_str = dt_match.group(1) if dt_match else None
 
-                        if channel_num in cam_by_channel or len(CAMERAS) == 1:
-                            target_cam = cam_by_channel.get(channel_num, CAMERAS[0])
+                        # Hanya proses jika nomor channel ini benar-benar terdaftar di config.json
+                        if channel_num is not None and channel_num in cam_by_channel:
+                            target_cam = cam_by_channel[channel_num]
                             now_ts = time.time()
                             last_ts = last_motion_trigger.get(channel_num, 0)
 
@@ -982,16 +983,17 @@ def motion_event_listener_worker():
                     buffer = ""
                     if "action=Start" in dahua_block:
                         idx_match = re.search(r"index=(\d+)", dahua_block)
-                        channel_num = int(idx_match.group(1)) + 1 if idx_match else 1
-                        target_cam = cam_by_channel.get(channel_num, CAMERAS[0])
-                        print(f"\n⚡ [{worker_name}] 🚨 EVENT GERAKAN TERDETEKSI (Dahua CGI)!")
-                        print(f"   • Jenis Event : VideoMotion (action: Start)")
-                        print(f"   • Kamera      : Ch {channel_num} ({target_cam['name']})")
-                        thumb_path = None
-                        if motion_window_mgr.should_capture_thumbnail(channel_num):
-                            m_res = take_nvr_snapshot(target_cam, is_motion_event=True, save_to_queue=False)
-                            thumb_path = m_res.get("webp_path") if m_res.get("success") else None
-                        motion_window_mgr.on_motion_event(target_cam, thumbnail_path=thumb_path)
+                        channel_num = int(idx_match.group(1)) + 1 if idx_match else None
+                        if channel_num is not None and channel_num in cam_by_channel:
+                            target_cam = cam_by_channel[channel_num]
+                            print(f"\n⚡ [{worker_name}] 🚨 EVENT GERAKAN TERDETEKSI (Dahua CGI)!")
+                            print(f"   • Jenis Event : VideoMotion (action: Start)")
+                            print(f"   • Kamera      : Ch {channel_num} ({target_cam['name']})")
+                            thumb_path = None
+                            if motion_window_mgr.should_capture_thumbnail(channel_num):
+                                m_res = take_nvr_snapshot(target_cam, is_motion_event=True, save_to_queue=False)
+                                thumb_path = m_res.get("webp_path") if m_res.get("success") else None
+                            motion_window_mgr.on_motion_event(target_cam, thumbnail_path=thumb_path)
 
         except requests.exceptions.RequestException as req_e:
             print(f"[{datetime.now()}] [{worker_name}] ⚠️ Koneksi Event Stream terputus ({req_e}). Reconnecting in 5s...")
