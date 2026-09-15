@@ -94,18 +94,19 @@ fi
 
 # 6. Buat dan Konfigurasi Auto Systemd Service (User=root untuk keamanan izin I/O)
 echo "⚙️ [6/6] Membuat File Service Background Systemd (Disabled & Inactive)..."
-SERVICE_PATH="/etc/systemd/system/cctv-snapshot.service"
+SERVICE_NAME="cctv-motion"
+SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
 
 $SUDO_CMD bash -c "cat <<EOF > $SERVICE_PATH
 [Unit]
-Description=Maritime NVR CCTV Snapshot & Motion Agent
+Description=Maritime NVR CCTV Snapshot & Motion Video Alert Agent
 After=network.target network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
-Environment="LIBVA_DRIVER_NAME=i965"
+Environment=\"LIBVA_DRIVER_NAME=i965\"
 WorkingDirectory=$CURRENT_DIR
 ExecStart=/usr/bin/python3 $CURRENT_DIR/snapshotcompress.py
 Restart=always
@@ -125,8 +126,8 @@ echo "     1. Hubungkan NetBird VPN      : netbird up --setup-key [minta key]"
 echo "     2. Monitor System (CPU/RAM)   : btop"
 echo "     3. Edit IP NVR & Token Kamera : nano config.json"
 echo "     4. Uji Coba Manual Terlebih Dulu : python3 snapshotcompress.py"
-echo "     5. Aktifkan Auto-Start Boot   : $SUDO_CMD systemctl enable cctv-snapshot"
-echo "     6. Jalankan Service           : $SUDO_CMD systemctl start cctv-snapshot"
-echo "     7. Cek Status Service         : $SUDO_CMD systemctl status cctv-snapshot"
+echo "     5. Aktifkan Auto-Start Boot   : $SUDO_CMD systemctl enable $SERVICE_NAME"
+echo "     6. Jalankan Service           : $SUDO_CMD systemctl start $SERVICE_NAME"
+echo "     7. Cek Status Service         : $SUDO_CMD systemctl status $SERVICE_NAME"
 echo "     8. Lihat Log Realtime         : tail -f logs/agent_\$(date +%Y-%m-%d).log"
 echo "====================================================================="

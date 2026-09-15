@@ -206,7 +206,7 @@ Skrip `setup.sh` secara otomatis akan:
 3. Menginstall dependensi sistem (`ffmpeg`, `webp`, `sqlite3`, `btop`, `python3`, `va-driver-all`, `vainfo`).
 4. Menginstall **NetBird VPN** untuk remote access maritim.
 5. Memasang library Python (`requests`, `opencv-python-headless`, `numpy`, `pillow`).
-6. Membuat service background `cctv-snapshot.service` (Systemd).
+6. Membuat service background `cctv-motion.service` (Systemd).
 
 ### ⚙️ Menjalankan Layanan:
 ```bash
@@ -217,11 +217,11 @@ netbird up --setup-key [SETUP_KEY]
 python3 snapshotcompress.py
 
 # 3. Aktifkan & Jalankan Sebagai Background Service
-sudo systemctl enable cctv-snapshot
-sudo systemctl start cctv-snapshot
+sudo systemctl enable cctv-motion
+sudo systemctl start cctv-motion
 
 # 4. Monitoring Realtime
-sudo systemctl status cctv-snapshot
+sudo systemctl status cctv-motion
 tail -f logs/agent_$(date +%Y-%m-%d).log
 btop
 ```
