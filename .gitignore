@@ -1,3 +1,6 @@
+# Local-only notes (jangan di-push)
+nextopsi.md
+
 # SQLite Databases
 *.db
 *.db-wal
