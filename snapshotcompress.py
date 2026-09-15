@@ -591,31 +591,43 @@ class MotionWindowManager:
             overlap_desc = f"⚡ Sambungan Klip Sebelumnya (Anti-Overlap Aktif, mulai {start_dt.strftime('%H:%M:%S')})" if is_overlap else f"Normal (Pre-event {MOTION_PRE_EVENT_SEC}s sebelum kejadian)"
             print(f"   📐 [MotionClip Boundary Ch {channel_num}] Rentang NVR: {start_dt.strftime('%H:%M:%S')} s/d {end_dt.strftime('%H:%M:%S')} ({MOTION_CLIP_DURATION_SEC}s) | Status: {overlap_desc}")
 
-            # Konversi format waktu untuk NVR Playback Track:
-            # Standar ISO UTC ("Z"): Konversi matematis jika ada timezone (misal +07:00 -> UTC 00:00)
-            if dt_nvr.tzinfo is not None:
-                start_dt_utc = start_dt.astimezone(timezone.utc)
-                end_dt_utc = end_dt.astimezone(timezone.utc)
-            else:
-                start_dt_utc = start_dt
-                end_dt_utc = end_dt
+            # ─────────────────────────────────────────────────────────────────
+            # KONVERSI FORMAT WAKTU UNTUK NVR PLAYBACK TRACK
+            # ─────────────────────────────────────────────────────────────────
+            # PENTING: NVR adalah sumber kebenaran jam — JANGAN konversi ke UTC.
+            # NVR mengirim timestamp dengan zona waktu (mis. +07:00) sesuai jam
+            # internalnya sendiri. Jika kita lakukan astimezone(utc) maka RTSP
+            # playback akan menarik rekaman yang salah (7 jam lebih awal).
+            #
+            # Solusi: Strip timezone metadata tapi PERTAHANKAN NILAI DIGIT-NYA.
+            # Lalu kirim sebagai-is ke RTSP URL (NVR menginterpretasikan sesuai
+            # jam internalnya — sudah cocok karena sumber dari NVR itu sendiri).
+            # ─────────────────────────────────────────────────────────────────
 
-            s_utc_str = start_dt_utc.strftime("%Y%m%dT%H%M%SZ")
-            e_utc_str = end_dt_utc.strftime("%Y%m%dT%H%M%SZ")
+            # Strip tzinfo tapi tetap pakai nilai angka jam NVR apa adanya
+            start_dt_nvr = start_dt.replace(tzinfo=None)
+            end_dt_nvr   = end_dt.replace(tzinfo=None)
 
-            # Waktu lokal NVR (tanpa huruf 'Z')
-            s_loc_str = start_dt.strftime("%Y%m%dT%H%M%S")
-            e_loc_str = end_dt.strftime("%Y%m%dT%H%M%S")
+            # Format "NVR-native": digit jam NVR + suffix Z (NVR baca sesuai jam internalnya)
+            s_nvr_str = start_dt_nvr.strftime("%Y%m%dT%H%M%SZ")
+            e_nvr_str = end_dt_nvr.strftime("%Y%m%dT%H%M%SZ")
+
+            # Format tanpa Z sebagai fallback alternatif
+            s_loc_str = start_dt_nvr.strftime("%Y%m%dT%H%M%S")
+            e_loc_str = end_dt_nvr.strftime("%Y%m%dT%H%M%S")
+
+            print(f"   🕐 [MotionClip Timestamp Ch {channel_num}] Waktu NVR dipakai langsung: {s_nvr_str} s/d {e_nvr_str} (TANPA konversi UTC)")
 
             # Prioritas kandidat pemotongan klip:
-            # 1. Lapis 1A: Playback Track Main-Stream (01)
-            # 2. Lapis 1B: Playback Track Sub-Stream (02)
-            # 3. Lapis 2: Fallback RTSP Live Stream Main-Stream (01)
+            # 1. Lapis 1A: Playback Main-Stream — waktu jam NVR (suffix Z)
+            # 2. Lapis 1B: Playback Main-Stream — waktu jam NVR (tanpa Z)
+            # 3. Lapis 1C: Playback Sub-Stream  — waktu jam NVR (suffix Z)
+            # 4. Lapis 2 : Fallback RTSP Live Stream Main-Stream
             cut_candidates = [
-                ("Lapis 1A (Playback Main-Stream UTC)", f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/tracks/{channel_num}01?starttime={s_utc_str}&endtime={e_utc_str}"),
-                ("Lapis 1A (Playback Main-Stream Lokal)", f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/tracks/{channel_num}01?starttime={s_loc_str}&endtime={e_loc_str}"),
-                ("Lapis 1B (Playback Sub-Stream UTC)", f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/tracks/{channel_num}02?starttime={s_utc_str}&endtime={e_utc_str}"),
-                ("Lapis 2 (RTSP Live Stream 01)", f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/Channels/{channel_num}01"),
+                ("Lapis 1A (Playback Main +Z)", f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/tracks/{channel_num}01?starttime={s_nvr_str}&endtime={e_nvr_str}"),
+                ("Lapis 1B (Playback Main noZ)", f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/tracks/{channel_num}01?starttime={s_loc_str}&endtime={e_loc_str}"),
+                ("Lapis 1C (Playback Sub +Z)",  f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/tracks/{channel_num}02?starttime={s_nvr_str}&endtime={e_nvr_str}"),
+                ("Lapis 2  (RTSP Live 01)",      f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/Channels/{channel_num}01"),
             ]
 
             # Tunggu sejenak agar NVR selesai menulis detik kejadian ke disk
