@@ -594,40 +594,58 @@ class MotionWindowManager:
             # ─────────────────────────────────────────────────────────────────
             # KONVERSI FORMAT WAKTU UNTUK NVR PLAYBACK TRACK
             # ─────────────────────────────────────────────────────────────────
-            # PENTING: NVR adalah sumber kebenaran jam — JANGAN konversi ke UTC.
-            # NVR mengirim timestamp dengan zona waktu (mis. +07:00) sesuai jam
-            # internalnya sendiri. Jika kita lakukan astimezone(utc) maka RTSP
-            # playback akan menarik rekaman yang salah (7 jam lebih awal).
+            # HASIL TES MANUAL (2026-09-15):
+            #   ✅ Format UTC murni (jam NVR - offset tz → UTC + suffix Z) → NVR terima
+            #   ❌ Format jam lokal tanpa Z → NVR tolak 400 Bad Request
             #
-            # Solusi: Strip timezone metadata tapi PERTAHANKAN NILAI DIGIT-NYA.
-            # Lalu kirim sebagai-is ke RTSP URL (NVR menginterpretasikan sesuai
-            # jam internalnya — sudah cocok karena sumber dari NVR itu sendiri).
+            # NVR Hikvision di jaringan baru (192.168.16.2) menginterpretasikan
+            # parameter starttime/endtime sebagai UTC. Oleh karena itu kita HARUS
+            # mengkonversi jam NVR (yang ber-timezone info misal +07:00) ke UTC
+            # sebelum dimasukkan ke URL RTSP playback.
+            #
+            # Urutan kandidat:
+            #   Lapis 1A/1B: UTC murni (PRIORITAS — terbukti diterima NVR)
+            #   Lapis 1C/1D: Jam NVR asli (fallback untuk NVR lama yang tidak butuh UTC)
+            #   Lapis 2    : Live Stream (last resort)
             # ─────────────────────────────────────────────────────────────────
 
-            # Strip tzinfo tapi tetap pakai nilai angka jam NVR apa adanya
+            # ── UTC murni: konversi timezone NVR → UTC ──
+            # Jika start_dt tidak punya tzinfo (karena NVR kirim tanpa tz), asumsikan
+            # lokal sistem (aware). Jika sudah aware, konversi langsung ke UTC.
+            if start_dt.tzinfo is not None:
+                start_dt_utc = start_dt.astimezone(timezone.utc)
+                end_dt_utc   = end_dt.astimezone(timezone.utc)
+            else:
+                # NVR tidak kirim timezone info → asumsikan jam NVR = jam lokal sistem
+                local_tz = datetime.now(timezone.utc).astimezone().tzinfo
+                start_dt_utc = start_dt.replace(tzinfo=local_tz).astimezone(timezone.utc)
+                end_dt_utc   = end_dt.replace(tzinfo=local_tz).astimezone(timezone.utc)
+
+            s_utc_str = start_dt_utc.strftime("%Y%m%dT%H%M%SZ")
+            e_utc_str = end_dt_utc.strftime("%Y%m%dT%H%M%SZ")
+
+            # ── Fallback jam NVR asli (tanpa konversi) ──
             start_dt_nvr = start_dt.replace(tzinfo=None)
             end_dt_nvr   = end_dt.replace(tzinfo=None)
+            s_nvr_str    = start_dt_nvr.strftime("%Y%m%dT%H%M%SZ")
+            e_nvr_str    = end_dt_nvr.strftime("%Y%m%dT%H%M%SZ")
+            s_loc_str    = start_dt_nvr.strftime("%Y%m%dT%H%M%S")
+            e_loc_str    = end_dt_nvr.strftime("%Y%m%dT%H%M%S")
 
-            # Format "NVR-native": digit jam NVR + suffix Z (NVR baca sesuai jam internalnya)
-            s_nvr_str = start_dt_nvr.strftime("%Y%m%dT%H%M%SZ")
-            e_nvr_str = end_dt_nvr.strftime("%Y%m%dT%H%M%SZ")
-
-            # Format tanpa Z sebagai fallback alternatif
-            s_loc_str = start_dt_nvr.strftime("%Y%m%dT%H%M%S")
-            e_loc_str = end_dt_nvr.strftime("%Y%m%dT%H%M%S")
-
-            print(f"   🕐 [MotionClip Timestamp Ch {channel_num}] Waktu NVR dipakai langsung: {s_nvr_str} s/d {e_nvr_str} (TANPA konversi UTC)")
+            print(f"   🕐 [MotionClip Timestamp Ch {channel_num}] NVR: {s_nvr_str} → UTC: {s_utc_str} s/d {e_utc_str}")
 
             # Prioritas kandidat pemotongan klip:
-            # 1. Lapis 1A: Playback Main-Stream — waktu jam NVR (suffix Z)
-            # 2. Lapis 1B: Playback Main-Stream — waktu jam NVR (tanpa Z)
-            # 3. Lapis 1C: Playback Sub-Stream  — waktu jam NVR (suffix Z)
-            # 4. Lapis 2 : Fallback RTSP Live Stream Main-Stream
+            # 1. Lapis 1A: Playback Main-Stream — UTC murni (terbukti diterima NVR baru)
+            # 2. Lapis 1B: Playback Sub-Stream  — UTC murni
+            # 3. Lapis 1C: Playback Main-Stream — jam NVR asli +Z (fallback NVR lama)
+            # 4. Lapis 1D: Playback Main-Stream — jam NVR tanpa Z (fallback lama noZ)
+            # 5. Lapis 2 : Fallback RTSP Live Stream Main-Stream (last resort)
             cut_candidates = [
-                ("Lapis 1A (Playback Main +Z)", f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/tracks/{channel_num}01?starttime={s_nvr_str}&endtime={e_nvr_str}"),
-                ("Lapis 1B (Playback Main noZ)", f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/tracks/{channel_num}01?starttime={s_loc_str}&endtime={e_loc_str}"),
-                ("Lapis 1C (Playback Sub +Z)",  f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/tracks/{channel_num}02?starttime={s_nvr_str}&endtime={e_nvr_str}"),
-                ("Lapis 2  (RTSP Live 01)",      f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/Channels/{channel_num}01"),
+                ("Lapis 1A (Playback Main UTC)",  f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/tracks/{channel_num}01?starttime={s_utc_str}&endtime={e_utc_str}"),
+                ("Lapis 1B (Playback Sub UTC)",   f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/tracks/{channel_num}02?starttime={s_utc_str}&endtime={e_utc_str}"),
+                ("Lapis 1C (Playback Main NVR+Z)", f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/tracks/{channel_num}01?starttime={s_nvr_str}&endtime={e_nvr_str}"),
+                ("Lapis 1D (Playback Main NVRnoZ)", f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/tracks/{channel_num}01?starttime={s_loc_str}&endtime={e_loc_str}"),
+                ("Lapis 2  (RTSP Live 01)",        f"rtsp://{NVR_USER}:{NVR_PASS}@{NVR_IP}:{NVR_PORT}/Streaming/Channels/{channel_num}01"),
             ]
 
             # Tunggu sejenak agar NVR selesai menulis detik kejadian ke disk
@@ -688,11 +706,23 @@ class MotionWindowManager:
                                 break
                             else:
                                 err_lines = [l.strip() for l in (res.stderr or "").splitlines() if l.strip()]
-                                last_err_msg = err_lines[-1] if err_lines else f"Exit code {res.returncode}"
+                                meaningful_err = next((l for l in reversed(err_lines) if any(kw in l.lower() for kw in ["server returned", "404", "401", "403", "500", "refused", "unauthorized", "not found", "method describe failed", "invalid data", "failed to connect"])), None)
+                                if res.returncode == 0:
+                                    file_sz = os.path.getsize(clip_path) if os.path.exists(clip_path) else 0
+                                    last_err_msg = f"Ukuran klip tidak valid ({file_sz} bytes, file kosong/belum ada rekaman di NVR)"
+                                else:
+                                    last_err_msg = meaningful_err if meaningful_err else (err_lines[-1] if err_lines else f"Exit code {res.returncode}")
+                                if NVR_PASS:
+                                    last_err_msg = last_err_msg.replace(NVR_PASS, "******")
+                                print(f"   ⚠️ [MotionClip Ch {channel_num}] {tier_label} gagal: {last_err_msg}")
                         except subprocess.TimeoutExpired:
                             last_err_msg = "Timeout RTSP (NVR tidak merespons dalam 18s)"
+                            print(f"   ⚠️ [MotionClip Ch {channel_num}] {tier_label} gagal: {last_err_msg}")
                         except Exception as ex:
                             last_err_msg = str(ex)
+                            if NVR_PASS:
+                                last_err_msg = last_err_msg.replace(NVR_PASS, "******")
+                            print(f"   ⚠️ [MotionClip Ch {channel_num}] {tier_label} gagal: {last_err_msg}")
 
                     if clip_success:
                         break

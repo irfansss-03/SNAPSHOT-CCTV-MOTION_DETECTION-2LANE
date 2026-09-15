@@ -1,6 +1,6 @@
 {
     "nvr": {
-        "ip": "192.168.7.184",
+        "ip": "192.168.16.2",
         "port": 554,
         "http_port": 80,
         "user": "admin",
@@ -16,9 +16,9 @@
         "snapshot_interval_sec": 60,
         "connection_check_interval_sec": 60,
         "hd_retention_days": 30,
-        "motion_window_sec": 300,
+        "motion_window_sec": 60,
         "motion_clip_duration_sec": 10,
-        "motion_pre_event_sec": 3,
+        "motion_pre_event_sec": 5,
         "motion_cooldown_sec": 0,
         "motion_capture_delay_sec": 0.0,
         "vaapi_device": "/dev/dri/renderD128",
